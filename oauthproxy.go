@@ -117,6 +117,8 @@ type OAuthProxy struct {
 	redirectValidator redirect.Validator
 	appDirector       redirect.AppDirector
 
+	sessionTracker sessionTracker
+
 	encodeState bool
 }
 
@@ -343,6 +345,7 @@ func (p *OAuthProxy) buildServeMux(proxyPrefix string) {
 func (p *OAuthProxy) buildProxySubrouter(s *mux.Router) {
 	s.Use(prepareNoCacheMiddleware)
 
+	s.Path("/backchannel_logout").HandlerFunc(p.BackchannelLogout)
 	s.Path(signInPath).HandlerFunc(p.SignIn)
 	s.Path(oauthStartPath).HandlerFunc(p.OAuthStart)
 	s.Path(oauthCallbackPath).HandlerFunc(p.OAuthCallback)
@@ -548,6 +551,9 @@ func buildAPIRoutes(opts *options.Options) ([]apiRoute, error) {
 // ClearSessionCookie creates a cookie to unset the user's authentication cookie
 // stored in the user's session
 func (p *OAuthProxy) ClearSessionCookie(rw http.ResponseWriter, req *http.Request) error {
+	if scope := middlewareapi.GetRequestScope(req); scope != nil && scope.Session != nil {
+		p.sessionTracker.logoutSession(scope.Session, p.CookieOptions.Expire)
+	}
 	return p.sessionStore.Clear(rw, req)
 }
 
@@ -809,6 +815,9 @@ func (p *OAuthProxy) backendLogout(rw http.ResponseWriter, req *http.Request) {
 	if session == nil {
 		return
 	}
+
+	// Close authenticated WebSockets before waiting for the provider's logout.
+	p.sessionTracker.logoutSession(session, p.CookieOptions.Expire)
 
 	providerData := p.provider.Data()
 	if providerData.BackendLogoutURL == "" {
@@ -1073,7 +1082,7 @@ func (p *OAuthProxy) Proxy(rw http.ResponseWriter, req *http.Request) {
 
 		// we are authenticated
 		p.addHeadersForProxying(rw, session)
-		p.headersChain.Then(p.upstreamProxy).ServeHTTP(rw, req)
+		p.proxyWithSession(rw, req, session)
 	case ErrNeedsLogin:
 		// we need to send the user to a login screen
 		if p.forceJSONErrors || isAjax(req) || p.isAPIPath(req) {
@@ -1163,6 +1172,11 @@ func (p *OAuthProxy) getOAuthRedirectURI(req *http.Request) string {
 // Set-Cookie headers may be set on the response as a side-effect of calling this method.
 func (p *OAuthProxy) getAuthenticatedSession(rw http.ResponseWriter, req *http.Request) (*sessionsapi.SessionState, error) {
 	session := middlewareapi.GetRequestScope(req).Session
+
+	if session != nil && p.sessionTracker.revoked(session) {
+		_ = p.ClearSessionCookie(rw, req)
+		return nil, ErrNeedsLogin
+	}
 
 	// Check this after loading the session so that if a valid session exists, we can add headers from it
 	if p.IsAllowedRequest(req) {

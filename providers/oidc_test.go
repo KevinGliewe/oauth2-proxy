@@ -122,6 +122,7 @@ func TestOIDCProviderRedeem(t *testing.T) {
 	session, err := provider.Redeem(context.Background(), provider.RedeemURL.String(), "code1234", "")
 	assert.Equal(t, nil, err)
 	assert.Equal(t, defaultIDToken.Email, session.Email)
+	assert.NotZero(t, session.LogoutIssuedAt)
 	assert.Equal(t, accessToken, session.AccessToken)
 	assert.Equal(t, idToken, session.IDToken)
 	assert.Equal(t, refreshToken, session.RefreshToken)
@@ -203,9 +204,11 @@ func TestOIDCProviderRefreshSessionIfNeededWithIdToken(t *testing.T) {
 		Email:        "changeit",
 		User:         "changeit",
 	}
+	existingSession.LogoutIssuedAt = 12345
 	refreshed, err := provider.RefreshSession(context.Background(), existingSession)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, refreshed, true)
+	assert.Equal(t, int64(12345), existingSession.LogoutIssuedAt)
 	assert.Equal(t, defaultIDToken.Email, existingSession.Email)
 	assert.Equal(t, defaultIDToken.Subject, existingSession.User)
 	assert.Equal(t, accessToken, existingSession.AccessToken)

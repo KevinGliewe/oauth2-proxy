@@ -22,6 +22,9 @@ type SessionState struct {
 	IDToken      string `msgpack:"it,omitempty"`
 	RefreshToken string `msgpack:"rt,omitempty"`
 
+	// LogoutIssuedAt preserves the original ID token issuance across refreshes.
+	LogoutIssuedAt int64 `msgpack:"li,omitempty"`
+
 	Nonce []byte `msgpack:"n,omitempty"`
 
 	Email             string   `msgpack:"e,omitempty"`
