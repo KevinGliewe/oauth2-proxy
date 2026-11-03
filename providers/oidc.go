@@ -162,6 +162,7 @@ func (p *OIDCProvider) RefreshSession(ctx context.Context, s *sessions.SessionSt
 // Access Token and (optionally) the ID Token.
 // https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse
 func (p *OIDCProvider) redeemRefreshToken(ctx context.Context, s *sessions.SessionState) error {
+	s.EnsureOIDCSession()
 	clientSecret, err := p.GetClientSecret()
 	if err != nil {
 		return err
@@ -239,7 +240,7 @@ func (p *OIDCProvider) CreateSessionFromToken(ctx context.Context, token string)
 // createSession takes an oauth2.Token and creates a SessionState from it.
 // It alters behavior if called from Redeem vs Refresh
 func (p *OIDCProvider) createSession(ctx context.Context, token *oauth2.Token, refresh bool) (*sessions.SessionState, error) {
-	verifiedIDToken, err := p.verifyIDToken(ctx, token)
+	_, err := p.verifyIDToken(ctx, token)
 	if err != nil {
 		switch err {
 		case ErrMissingIDToken:
@@ -261,9 +262,7 @@ func (p *OIDCProvider) createSession(ctx context.Context, token *oauth2.Token, r
 	ss.AccessToken = token.AccessToken
 	ss.RefreshToken = token.RefreshToken
 	ss.IDToken = rawIDToken
-	if verifiedIDToken != nil && !verifiedIDToken.IssuedAt.IsZero() {
-		ss.LogoutIssuedAt = verifiedIDToken.IssuedAt.Unix()
-	}
+	ss.EnsureOIDCSession()
 
 	ss.CreatedAtNow()
 	ss.SetExpiresOn(token.Expiry)

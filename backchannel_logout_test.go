@@ -201,12 +201,15 @@ func TestBackchannelLogoutTokens(t *testing.T) {
 		}
 		return token
 	}
-	send := func(token string) int {
-		req := httptest.NewRequest(http.MethodPost, "/oauth2/backchannel_logout", strings.NewReader(url.Values{"logout_token": {token}}.Encode()))
+	sendForm := func(target string, form url.Values) int {
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		w := httptest.NewRecorder()
 		p.BackchannelLogout(w, req)
 		return w.Code
+	}
+	send := func(token string) int {
+		return sendForm("/oauth2/backchannel_logout", url.Values{"logout_token": {token}})
 	}
 	req := httptest.NewRequest(http.MethodGet, "/oauth2/backchannel_logout", nil)
 	methodResponse := httptest.NewRecorder()
@@ -229,6 +232,7 @@ func TestBackchannelLogoutTokens(t *testing.T) {
 		{"stale", func(c map[string]interface{}) { c["iat"] = time.Now().Add(-10 * time.Minute).Unix() }},
 		{"future", func(c map[string]interface{}) { c["iat"] = time.Now().Add(10 * time.Minute).Unix() }},
 		{"expired", func(c map[string]interface{}) { c["exp"] = time.Now().Add(-time.Minute).Unix() }},
+		{"not yet valid", func(c map[string]interface{}) { c["nbf"] = time.Now().Add(10 * time.Minute).Unix() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := claims()
@@ -241,6 +245,52 @@ func TestBackchannelLogoutTokens(t *testing.T) {
 	if status := send("unsigned"); status != 400 {
 		t.Fatalf("unsigned status %d", status)
 	}
+	// A structurally valid token signed by a different key must fail verification.
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSigner, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: otherKey}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(claims())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSignature, err := otherSigner.Sign(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongToken, err := wrongSignature.CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := send(wrongToken); status != http.StatusBadRequest {
+		t.Fatalf("wrong signature status %d", status)
+	}
+
+	for _, tc := range []struct {
+		name, target string
+		form         url.Values
+	}{
+		{"query only", "/oauth2/backchannel_logout?logout_token=" + url.QueryEscape(sign(claims())), nil},
+		{"duplicate body", "/oauth2/backchannel_logout", url.Values{"logout_token": {sign(claims()), sign(claims())}}},
+		{"oversized body", "/oauth2/backchannel_logout", url.Values{"logout_token": {strings.Repeat("x", 64<<10)}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if status := sendForm(tc.target, tc.form); status != http.StatusBadRequest {
+				t.Fatalf("status %d", status)
+			}
+		})
+	}
+	withQuery := claims()
+	withQuery["jti"] = "body-not-query"
+	withQuery["nbf"] = time.Now().Add(-time.Minute).Unix()
+	if status := sendForm("/oauth2/backchannel_logout?logout_token=invalid&logout_token=also-invalid", url.Values{"logout_token": {sign(withQuery)}}); status != http.StatusOK {
+		t.Fatalf("valid body with ignored query status %d", status)
+	}
+
 	token := sign(claims()) // exp is optional in Logout Tokens
 	if status := send(token); status != 200 {
 		t.Fatalf("valid status %d", status)

@@ -211,7 +211,6 @@ func NewOAuthProxy(opts *options.Options, validator func(string) bool) (*OAuthPr
 	if err != nil {
 		return nil, fmt.Errorf("could not build pre-auth chain: %v", err)
 	}
-	sessionChain := buildSessionChain(opts, provider, sessionStore, basicAuthValidator)
 	headersChain, err := buildHeadersChain(opts)
 	if err != nil {
 		return nil, fmt.Errorf("could not build headers chain: %v", err)
@@ -247,7 +246,6 @@ func NewOAuthProxy(opts *options.Options, validator func(string) bool) (*OAuthPr
 
 		basicAuthValidator: basicAuthValidator,
 		basicAuthGroups:    opts.HtpasswdUserGroups,
-		sessionChain:       sessionChain,
 		headersChain:       headersChain,
 		preAuthChain:       preAuthChain,
 		pageWriter:         pageWriter,
@@ -256,6 +254,7 @@ func NewOAuthProxy(opts *options.Options, validator func(string) bool) (*OAuthPr
 		appDirector:        appDirector,
 		encodeState:        opts.EncodeState,
 	}
+	p.sessionChain = buildSessionChain(opts, provider, sessionStore, basicAuthValidator, &p.sessionTracker)
 	p.buildServeMux(opts.ProxyPrefix)
 
 	if err := p.setupServer(opts); err != nil {
@@ -411,7 +410,7 @@ func buildTrustedProxyNetSet(opts *options.Options) (*ip.NetSet, error) {
 	return ip.ParseNetSet(trustedProxyIPs)
 }
 
-func buildSessionChain(opts *options.Options, provider providers.Provider, sessionStore sessionsapi.SessionStore, validator basic.Validator) alice.Chain {
+func buildSessionChain(opts *options.Options, provider providers.Provider, sessionStore sessionsapi.SessionStore, validator basic.Validator, tracker *sessionTracker) alice.Chain {
 	chain := alice.New()
 
 	if opts.SkipJwtBearerTokens {
@@ -433,10 +432,12 @@ func buildSessionChain(opts *options.Options, provider providers.Provider, sessi
 	}
 
 	chain = chain.Append(middleware.NewStoredSessionLoader(&middleware.StoredSessionLoaderOptions{
-		SessionStore:    sessionStore,
-		RefreshPeriod:   opts.Cookie.Refresh,
-		RefreshSession:  provider.RefreshSession,
-		ValidateSession: provider.ValidateSession,
+		SessionStore:         sessionStore,
+		RefreshPeriod:        opts.Cookie.Refresh,
+		RefreshSession:       provider.RefreshSession,
+		ValidateSession:      provider.ValidateSession,
+		IsSessionRevoked:     tracker.revoked,
+		OnSessionInvalidated: func(s *sessionsapi.SessionState) { tracker.logoutSession(s, opts.Cookie.Expire) },
 	}))
 
 	return chain
@@ -564,6 +565,16 @@ func (p *OAuthProxy) LoadCookiedSession(req *http.Request) (*sessionsapi.Session
 
 // SaveSession creates a new session cookie value and sets this on the response
 func (p *OAuthProxy) SaveSession(rw http.ResponseWriter, req *http.Request, s *sessionsapi.SessionState) error {
+	s.EnsureOIDCSession()
+	if len(s.Nonce) == 0 {
+		// Browser logins need a stable identity independent of tokens and the
+		// refresh timestamp, including manual htpasswd sign-in.
+		nonce, err := encryption.Nonce(32)
+		if err != nil {
+			return fmt.Errorf("creating session identity: %w", err)
+		}
+		s.Nonce = nonce
+	}
 	return p.sessionStore.Save(rw, req, s)
 }
 

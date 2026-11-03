@@ -76,6 +76,12 @@ type StoredSessionLoaderOptions struct {
 	// If the sesssion is older than `RefreshPeriod` but the provider doesn't
 	// refresh it, we must re-validate using this validation.
 	ValidateSession func(context.Context, *sessionsapi.SessionState) bool
+
+	// Optional local logout checks run before contacting the provider to refresh.
+	IsSessionRevoked func(*sessionsapi.SessionState) bool
+
+	// Optional callback receives the original session before it is discarded.
+	OnSessionInvalidated func(*sessionsapi.SessionState)
 }
 
 // NewStoredSessionLoader creates a new storedSessionLoader which loads
@@ -84,10 +90,12 @@ type StoredSessionLoaderOptions struct {
 // If a session was loader by a previous handler, it will not be replaced.
 func NewStoredSessionLoader(opts *StoredSessionLoaderOptions) alice.Constructor {
 	ss := &storedSessionLoader{
-		store:            opts.SessionStore,
-		refreshPeriod:    opts.RefreshPeriod,
-		sessionRefresher: opts.RefreshSession,
-		sessionValidator: opts.ValidateSession,
+		store:                opts.SessionStore,
+		refreshPeriod:        opts.RefreshPeriod,
+		sessionRefresher:     opts.RefreshSession,
+		sessionValidator:     opts.ValidateSession,
+		isSessionRevoked:     opts.IsSessionRevoked,
+		onSessionInvalidated: opts.OnSessionInvalidated,
 	}
 	return ss.loadSession
 }
@@ -95,10 +103,12 @@ func NewStoredSessionLoader(opts *StoredSessionLoaderOptions) alice.Constructor 
 // storedSessionLoader is responsible for loading sessions from cookie
 // identified sessions in the session store.
 type storedSessionLoader struct {
-	store            sessionsapi.SessionStore
-	refreshPeriod    time.Duration
-	sessionRefresher func(context.Context, *sessionsapi.SessionState) (bool, error)
-	sessionValidator func(context.Context, *sessionsapi.SessionState) bool
+	store                sessionsapi.SessionStore
+	refreshPeriod        time.Duration
+	sessionRefresher     func(context.Context, *sessionsapi.SessionState) (bool, error)
+	sessionValidator     func(context.Context, *sessionsapi.SessionState) bool
+	isSessionRevoked     func(*sessionsapi.SessionState) bool
+	onSessionInvalidated func(*sessionsapi.SessionState)
 }
 
 // loadSession attempts to load a session as identified by the request cookies.
@@ -141,8 +151,17 @@ func (s *storedSessionLoader) getValidatedSession(rw http.ResponseWriter, req *h
 		return nil, err
 	}
 
+	// Capture legacy sessions before refresh replaces their ID token. This also
+	// retains the original issuer/sub/sid when a refresh rotates token claims.
+	session.EnsureOIDCSession()
+	if s.isSessionRevoked != nil && s.isSessionRevoked(session) {
+		return nil, errors.New("session has been logged out")
+	}
 	err = s.refreshSessionIfNeeded(rw, req, session)
 	if err != nil {
+		if s.onSessionInvalidated != nil {
+			s.onSessionInvalidated(session)
+		}
 		return nil, fmt.Errorf("error refreshing access token for session (%s): %v", session, err)
 	}
 
@@ -202,6 +221,12 @@ func (s *storedSessionLoader) refreshSessionIfNeeded(rw http.ResponseWriter, req
 	// This is important so that changes are passed up the to the parent scope.
 	lock := session.Lock
 	*session = *freshSession
+	session.EnsureOIDCSession()
+	if s.isSessionRevoked != nil && s.isSessionRevoked(session) {
+		// Restore the held lock before returning so the deferred release works.
+		session.Lock = lock
+		return errors.New("session has been logged out")
+	}
 
 	// Ensure we maintain the session lock after we have refreshed the session.
 	// Loading from the session store creates a new lock in the session.

@@ -37,6 +37,7 @@ func (p *OAuthProxy) BackchannelLogout(rw http.ResponseWriter, req *http.Request
 		SID       string                     `json:"sid"`
 		IssuedAt  int64                      `json:"iat"`
 		ExpiresAt *int64                     `json:"exp"`
+		NotBefore *int64                     `json:"nbf"`
 		JTI       string                     `json:"jti"`
 		Nonce     json.RawMessage            `json:"nonce"`
 		Events    map[string]json.RawMessage `json:"events"`
@@ -53,7 +54,8 @@ func (p *OAuthProxy) BackchannelLogout(rw http.ResponseWriter, req *http.Request
 	if token.Issuer == "" || (claims.SID == "" && token.Subject == "") ||
 		claims.JTI == "" || claims.IssuedAt == 0 || len(claims.Nonce) != 0 || !validEvent ||
 		issued.After(now.Add(time.Minute)) || now.Sub(issued) > logoutTokenMaxAge ||
-		(claims.ExpiresAt != nil && now.Unix() >= *claims.ExpiresAt) {
+		(claims.ExpiresAt != nil && now.Unix() >= *claims.ExpiresAt) ||
+		(claims.NotBefore != nil && time.Unix(*claims.NotBefore, 0).After(now.Add(time.Minute))) {
 		http.Error(rw, "Invalid logout claims", http.StatusBadRequest)
 		return
 	}
