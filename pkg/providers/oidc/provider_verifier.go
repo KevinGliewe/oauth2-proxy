@@ -18,6 +18,7 @@ type ProviderVerifier interface {
 	DiscoveryEnabled() bool
 	Provider() DiscoveryProvider
 	Verifier() IDTokenVerifier
+	LogoutVerifier() IDTokenVerifier
 }
 
 // ProviderVerifierOptions allows you to configure a ProviderVerifier
@@ -110,6 +111,13 @@ func NewProviderVerifier(ctx context.Context, opts ProviderVerifierOptions) (Pro
 		return nil, fmt.Errorf("could not get verifier builder: %w", err)
 	}
 	verifier := NewVerifier(verifierBuilder(opts.toOIDCConfig()), opts.toVerificationOptions())
+	// Logout Tokens need not contain exp. Validate their age and optional exp in
+	// the logout handler. Always enforce the configured issuer and client ID.
+	logoutConfig := opts.toOIDCConfig()
+	logoutConfig.SkipExpiryCheck = true
+	logoutConfig.SkipIssuerCheck = false
+	logoutConfig.SkipClientIDCheck = false
+	logoutVerifier := verifierBuilder(logoutConfig)
 
 	if provider == nil {
 		// To avoid the possibility of nil pointers, always return an empty provider if discovery didn't occur.
@@ -121,6 +129,7 @@ func NewProviderVerifier(ctx context.Context, opts ProviderVerifierOptions) (Pro
 		discoveryEnabled: !opts.SkipDiscovery,
 		provider:         provider,
 		verifier:         verifier,
+		logoutVerifier:   logoutVerifier,
 	}, nil
 }
 
@@ -251,6 +260,7 @@ type providerVerifier struct {
 	discoveryEnabled bool
 	provider         DiscoveryProvider
 	verifier         IDTokenVerifier
+	logoutVerifier   IDTokenVerifier
 }
 
 // DiscoveryEnabled returns whether the provider verifier was constructed
@@ -268,3 +278,6 @@ func (p *providerVerifier) Provider() DiscoveryProvider {
 func (p *providerVerifier) Verifier() IDTokenVerifier {
 	return p.verifier
 }
+
+// LogoutVerifier returns a verifier for signed OIDC Back-Channel Logout Tokens.
+func (p *providerVerifier) LogoutVerifier() IDTokenVerifier { return p.logoutVerifier }

@@ -122,6 +122,8 @@ func TestOIDCProviderRedeem(t *testing.T) {
 	session, err := provider.Redeem(context.Background(), provider.RedeemURL.String(), "code1234", "")
 	assert.Equal(t, nil, err)
 	assert.Equal(t, defaultIDToken.Email, session.Email)
+	assert.NotNil(t, session.OIDCSession)
+	assert.NotZero(t, session.OIDCSession.IssuedAt)
 	assert.Equal(t, accessToken, session.AccessToken)
 	assert.Equal(t, idToken, session.IDToken)
 	assert.Equal(t, refreshToken, session.RefreshToken)
@@ -203,9 +205,11 @@ func TestOIDCProviderRefreshSessionIfNeededWithIdToken(t *testing.T) {
 		Email:        "changeit",
 		User:         "changeit",
 	}
+	existingSession.OIDCSession = &sessions.OIDCSessionState{Issuer: "original-issuer", Subject: "original-subject", SID: "original-sid", IssuedAt: 12345}
 	refreshed, err := provider.RefreshSession(context.Background(), existingSession)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, refreshed, true)
+	assert.Equal(t, &sessions.OIDCSessionState{Issuer: "original-issuer", Subject: "original-subject", SID: "original-sid", IssuedAt: 12345}, existingSession.OIDCSession)
 	assert.Equal(t, defaultIDToken.Email, existingSession.Email)
 	assert.Equal(t, defaultIDToken.Subject, existingSession.User)
 	assert.Equal(t, accessToken, existingSession.AccessToken)
@@ -332,4 +336,28 @@ func TestOIDCProviderResponseModeNotConfigured(t *testing.T) {
 
 	result := p.GetLoginURL("https://my.test.app/oauth", "", "", url.Values{})
 	assert.NotContains(t, result, "response_mode")
+}
+
+func TestOIDCRefreshCapturesLegacySessionIdentity(t *testing.T) {
+	previousClaims := defaultIDToken
+	previousClaims.RegisteredClaims.Subject = "legacy-subject"
+	previousToken, err := newSignedTestIDToken(previousClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := newSignedTestIDToken(defaultIDToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(redeemTokenResponse{AccessToken: accessToken, RefreshToken: refreshToken,
+		ExpiresIn: 10, TokenType: "Bearer", IDToken: replacement})
+	server, provider := newTestOIDCSetup(body)
+	defer server.Close()
+	legacy := &sessions.SessionState{IDToken: previousToken, RefreshToken: refreshToken}
+	if _, err := provider.RefreshSession(context.Background(), legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.IDToken != replacement || legacy.OIDCSession == nil || legacy.OIDCSession.Subject != "legacy-subject" {
+		t.Fatal("refresh lost the original identity of a session created before upgrading")
+	}
 }

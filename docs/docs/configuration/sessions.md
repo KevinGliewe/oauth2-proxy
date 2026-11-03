@@ -97,3 +97,53 @@ Note that flags `--redis-use-sentinel=true` and `--redis-use-cluster=true` are m
 Note, if Redis timeout option is set to non-zero, the `--redis-connection-idle-timeout` 
 must be less than [Redis timeout option](https://redis.io/docs/reference/clients/#client-timeouts). For example: if either redis.conf includes 
 `timeout 15` or using `CONFIG SET timeout 15` the `--redis-connection-idle-timeout` must be at least `--redis-connection-idle-timeout=14`
+
+## Back-channel logout and WebSockets
+
+OIDC providers can send signed OpenID Connect Back-Channel Logout 1.0 Logout
+Tokens to `POST /oauth2/backchannel_logout` (use your configured proxy prefix).
+Configure this URL as the client's back-channel logout URI at the identity
+provider. The endpoint accepts an `application/x-www-form-urlencoded` body with
+one `logout_token` field and requires no browser cookies. Providers without an
+OIDC verifier return HTTP 501.
+
+The proxy verifies the signature with the provider's configured keys and signing
+algorithms, the configured issuer, and the client ID in `aud`. Logout Tokens
+must contain `iat`, `jti`, the empty
+`http://schemas.openid.net/event/backchannel-logout` event object, and either
+`sid` or `sub`. They must not contain `nonce`. Tokens older than five minutes,
+more than one minute in the future, expired tokens, and replays are rejected
+with HTTP 400. The optional `exp` and `nbf` claims are checked when present;
+`nbf` allows up to one minute of clock skew.
+
+A `sid` logout closes every proxied WebSocket for that issuer and provider
+session, leaving other sessions for the user connected. Without `sid`, a
+`sub` logout closes the subject's sessions issued at or before the Logout
+Token's `iat`. A later login remains usable. The original token issuance time
+and provider identity are stored independently of tokens, including with
+`--session-cookie-minimal`, and retained across refreshes. Sessions created
+before upgrading use the identity of their stored ID token. Existing minimal
+cookies from before the upgrade have no recoverable provider identity; those
+users must sign in again to obtain back-channel logout support. Manual browser
+logins created before upgrading should also sign in again to receive a stable
+connection identity that survives refresh.
+
+Browser sign-out also closes WebSockets belonging to that browser session.
+Connections retain the authorization established at their authenticated
+handshake and close at the earlier of token expiry and cookie expiry. Sessions
+discarded after failed validation or refresh also close their connections.
+Logout revokes the session for subsequent authenticated HTTP requests and
+WebSocket handshakes; it does not
+recompute permissions for individual WebSocket messages. For stateless HTTP
+Basic authentication, logout closes current connections while fresh valid
+credentials can authenticate again.
+
+Connection tracking, replay protection, and revocation records are in memory,
+local to one proxy process. Revocations last for the configured cookie lifetime
+after logout. With `--cookie-expire=0`, revocation records remain until the
+process stops. Restarting discards all in-memory state. With multiple replicas,
+deliver each back-channel logout to **every replica** that serves the client;
+a shared Redis session store alone does not distribute these events. This
+feature applies to WebSockets proxied by OAuth2 Proxy itself. Connections
+upgraded by a separate ingress using only the auth endpoint must be closed by
+that ingress.

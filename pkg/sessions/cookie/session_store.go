@@ -103,6 +103,7 @@ func (s *SessionStore) VerifyConnection(_ context.Context) error {
 
 // cookieForSession serializes a session state for storage in a cookie
 func (s *SessionStore) cookieForSession(ss *sessions.SessionState) ([]byte, error) {
+	ss.EnsureOIDCSession()
 	if s.Minimal && (ss.AccessToken != "" || ss.IDToken != "" || ss.RefreshToken != "") {
 		minimal := *ss
 		minimal.AccessToken = ""

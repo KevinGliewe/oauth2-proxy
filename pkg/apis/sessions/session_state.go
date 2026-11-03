@@ -3,8 +3,11 @@ package sessions
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/encryption"
@@ -12,6 +15,15 @@ import (
 	"github.com/pierrec/lz4/v4"
 	"github.com/vmihailenco/msgpack/v5"
 )
+
+// OIDCSessionState retains the original authenticated provider identity independently
+// of tokens. It survives minimal cookie storage and token refresh.
+type OIDCSessionState struct {
+	Issuer   string `json:"iss" msgpack:"i"`
+	Subject  string `json:"sub" msgpack:"s"`
+	SID      string `json:"sid" msgpack:"sid,omitempty"`
+	IssuedAt int64  `json:"iat" msgpack:"iat,omitempty"`
+}
 
 // SessionState is used to store information about the currently authenticated user session
 type SessionState struct {
@@ -21,6 +33,9 @@ type SessionState struct {
 	AccessToken  string `msgpack:"at,omitempty"`
 	IDToken      string `msgpack:"it,omitempty"`
 	RefreshToken string `msgpack:"rt,omitempty"`
+
+	// OIDCSession is the original login identity, retained across refreshes.
+	OIDCSession *OIDCSessionState `msgpack:"os,omitempty"`
 
 	Nonce []byte `msgpack:"n,omitempty"`
 
@@ -36,6 +51,28 @@ type SessionState struct {
 	Clock     func() time.Time `msgpack:"-"` // override for time.Now, for testing
 	Lock      Lock             `msgpack:"-"`
 	Refreshed bool             `msgpack:"-"` // indicates whether the session was refreshed
+}
+
+// EnsureOIDCSession retains identity from an already authenticated ID token.
+// This only decodes claims; callers must authenticate the session first.
+// Existing metadata is immutable so refresh cannot change a login's identity.
+func (s *SessionState) EnsureOIDCSession() {
+	if s.OIDCSession != nil {
+		return
+	}
+	parts := strings.Split(s.IDToken, ".")
+	if len(parts) != 3 {
+		return
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return
+	}
+	var identity OIDCSessionState
+	if json.Unmarshal(payload, &identity) != nil || identity.Issuer == "" || identity.Subject == "" {
+		return
+	}
+	s.OIDCSession = &identity
 }
 
 func (s *SessionState) now() time.Time {

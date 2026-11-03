@@ -12,6 +12,7 @@ import (
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/options"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/authentication/hmacauth"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/util/ptr"
+	"golang.org/x/net/http/httpguts"
 )
 
 const (
@@ -92,7 +93,7 @@ func (h *httpUpstreamProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request)
 		req.Header.Set("GAP-Auth", rw.Header().Get("GAP-Auth"))
 		h.auth.SignRequest(req)
 	}
-	if h.wsHandler != nil && strings.EqualFold(req.Header.Get("Connection"), "upgrade") && req.Header.Get("Upgrade") == "websocket" {
+	if h.wsHandler != nil && httpguts.HeaderValuesContainsToken(req.Header.Values("Connection"), "upgrade") && strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
 		h.wsHandler.ServeHTTP(rw, req)
 	} else {
 		h.handler.ServeHTTP(rw, req)

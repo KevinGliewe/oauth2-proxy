@@ -109,6 +109,7 @@ func newProviderDataFromConfig(providerConfig options.Provider) (*ProviderData, 
 		}
 
 		p.Verifier = pv.Verifier()
+		p.LogoutVerifier = pv.LogoutVerifier()
 		if pv.DiscoveryEnabled() {
 			// Use the discovered values rather than any specified values
 			endpoints := pv.Provider().Endpoints()
